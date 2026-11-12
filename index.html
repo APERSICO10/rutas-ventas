@@ -202,7 +202,7 @@ table.rv-t{width:100%;border-collapse:collapse;font-size:var(--cds-font-size-cap
         <option>Jueves</option><option>Viernes</option><option>Sin día</option>
       </select>
     </label>
-    <label for="rv-prov">Proveedor <select id="rv-prov" data-draw="sel-prov" data-source="prov_mes"></select></label>
+    <label for="rv-prov">Proveedor <select id="rv-prov" data-draw="sel-prov" data-source="kpi"></select></label>
     <button type="button" class="rv-btn rv-reset">Limpiar filtros</button>
   </div>
 
@@ -526,11 +526,12 @@ dash.calc('acumulado', {
 dash.calc('rutas', {
   title: 'Rutas por vendedor y día',
   description: 'Clientes activos de cada vendedor por día de visita y proveedor ("" es todos): rutas, cuántos compraron este mes al vendedor, cuántos no y la venta.',
-  inputs: ['clientes', 'cli_prov'],
-  fn: (clientes, cli_prov) => {
+  inputs: ['clientes', 'cli_prov', 'diaria_prov'],
+  fn: (clientes, cli_prov, diaria_prov) => {
     const venta = new Map();
     for (const r of cli_prov) venta.set(r.cliente + '|' + r.vendedor + '|' + r.proveedor, Number(r.neto) || 0);
-    const provs = [...new Set(cli_prov.map((r) => r.proveedor))];
+    // También los proveedores que vendieron el mes anterior y este mes todavía no
+    const provs = [...new Set([...cli_prov, ...diaria_prov].map((r) => r.proveedor))];
     const m = new Map();
     for (const c of clientes) {
       for (const p of ['', ...provs]) {
@@ -552,15 +553,15 @@ dash.calc('rutas', {
 dash.calc('cuenta', {
   title: 'Clientes de ruta por filtro',
   description: 'Clientes de ruta y cuántos no compraron este mes, por vendedor, día y proveedor ("todos" y "" son el total).',
-  inputs: ['clientes', 'cli_prov'],
-  fn: (clientes, cli_prov) => {
+  inputs: ['clientes', 'cli_prov', 'diaria_prov'],
+  fn: (clientes, cli_prov, diaria_prov) => {
     const compro = new Map();
     for (const r of cli_prov) if (Number(r.neto) > 0) {
       const k = r.cliente + '|' + r.vendedor;
       if (!compro.has(k)) compro.set(k, new Set());
       compro.get(k).add(r.proveedor);
     }
-    const provs = [...new Set(cli_prov.map((r) => r.proveedor))];
+    const provs = [...new Set([...cli_prov, ...diaria_prov].map((r) => r.proveedor))];
     const m = new Map();
     for (const c of clientes) {
       const ps = compro.get(c.cliente + '|' + c.vendedor) || new Set();
@@ -767,9 +768,12 @@ dash.draw('sel-vend', (el) => {
 });
 
 dash.draw('sel-prov', (sel) => {
-  const d = dash.data('prov_mes');
-  const ps = d.status === 'ok' ? d.data.filter((x) => x.vend === 'todos' && x.neto > 0).sort((a, b) => b.neto - a.neto) : [];
-  sel.replaceChildren(new Option('Todos los proveedores', ''), ...ps.map((x) => new Option(x.proveedor, x.proveedor)));
+  // Los que vendieron este mes o el anterior (uno que dejó de vender sigue en la lista)
+  const d = dash.data('kpi');
+  const ps = d.status === 'ok' ? d.data.filter((x) => x.vend === 'todos' && x.prov && (x.venta > 0 || x.ant_total > 0))
+    .sort((a, b) => b.venta - a.venta || b.ant_total - a.ant_total) : [];
+  sel.replaceChildren(new Option('Todos los proveedores', ''),
+    ...ps.map((x) => new Option(x.prov + (x.venta > 0 ? '' : ' (sin venta este mes)'), x.prov)));
   sel.value = RV.prov();
   sel.onchange = () => dash.setParams({prov: sel.value});
 });
