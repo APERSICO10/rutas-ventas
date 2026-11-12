@@ -1,0 +1,1119 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Rutas y venta del mes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<style>
+  :root {
+    --font-anthropic-sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-anthropic-serif: "Source Serif 4", Georgia, serif;
+    --cds-gap-xs: 4px; --cds-gap-sm: 8px; --cds-gap-md: 12px; --cds-gap-lg: 20px;
+    --cds-pad-xs: 4px; --cds-pad-sm: 8px; --cds-pad-md: 12px; --cds-pad-lg: 16px;
+    --cds-radius: 8px; --cds-dur-slow: .3s;
+    --cds-font-size-caption: 12px; --cds-font-size-body: 14px; --cds-font-size-heading: 16px; --cds-font-size-title: 28px;
+    --cds-font-weight-medium: 600;
+    --color-bg: #f7f6f2; --color-panel: #ffffff; --color-fg: #1f1e1b; --color-fg-muted: #6b6860;
+    --color-border-line: #e3e0d8; --color-bad: #c43d3d; --color-ok: #2e8b57; --color-warn: #b7791f;
+    --cds-surface-popover: #ffffff; --cds-border: #d9d5cb; --cds-text-secondary: #6b6860;
+    --cds-shadow-popover: 0 4px 16px rgba(0,0,0,.12);
+    --cds-chart-grid: #eeebe4; --cds-chart-axis: #b9b5ab; --cds-chart-reference: #8a867c;
+    --cds-chart-muted: #c9c5bb; --cds-chart-status-critical: #d9534f;
+    --c1: #2f6fb5; --c2: #d9822b; --c3: #7b62c4;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --color-bg: #1a1918; --color-panel: #242320; --color-fg: #ecebe6; --color-fg-muted: #a39f95;
+      --color-border-line: #3a3833; --color-bad: #e06666; --color-ok: #5cc48a; --color-warn: #e0a24a;
+      --cds-surface-popover: #2c2a27; --cds-border: #45423c; --cds-text-secondary: #a39f95;
+      --cds-shadow-popover: 0 4px 16px rgba(0,0,0,.5);
+      --cds-chart-grid: #302e2a; --cds-chart-axis: #57544d; --cds-chart-reference: #8f8b81;
+      --cds-chart-muted: #5c5952; --cds-chart-status-critical: #e06666;
+      --c1: #6aa3e0; --c2: #e9a25c; --c3: #a48fe6;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--color-bg); color: var(--color-fg); font-family: var(--font-anthropic-sans); font-size: var(--cds-font-size-body); }
+  .pagina { max-width: 1280px; margin: 0 auto; padding: 24px max(16px, env(safe-area-inset-right, 0px)) 48px max(16px, env(safe-area-inset-left, 0px)); }
+  .al-dia { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); margin: 0 0 var(--cds-gap-sm); }
+  .dash-skeleton { color: transparent !important; background: var(--cds-chart-grid); border-radius: 4px; min-height: 1em; }
+</style>
+<script>
+// Reemplazo del runtime del tablero: lee los JSON de datos/, hace los cálculos,
+// guarda los filtros y vuelve a dibujar lo que se ve
+window.dash = (() => {
+  const ids = ["clientes", "diaria", "articulos", "diaria_prov", "cli_prov", "info"];
+  const FILTROS = {"vends": [], "dia": "", "prov": ""};
+  let params = JSON.parse(JSON.stringify(FILTROS));
+  const st = Object.fromEntries(ids.map((i) => [i, { status: 'loading', data: [] }]));
+  const calcs = new Map(), draws = new Map(), alCambiar = [];
+  let version = 0, listo = false;
+  const data = (i) => {
+    const c = calcs.get(i);
+    if (!c) return st[i] || { status: 'missing', data: [] };
+    if (c.version !== version) {
+      const ent = c.inputs.map(data);
+      if (ent.some((x) => x.status !== 'ok')) return { status: ent.some((x) => x.status === 'error') ? 'error' : 'loading', data: [] };
+      try { c.res = { status: 'ok', data: c.fn(...ent.map((x) => x.data)) }; }
+      catch (e) { console.error(i, e); c.res = { status: 'error', data: [] }; }
+      c.version = version;
+    }
+    return c.res;
+  };
+  const correr = (name) => {
+    const fn = draws.get(name);
+    if (!fn) return;
+    document.querySelectorAll('[data-draw="' + name + '"]').forEach((el) => {
+      if (el.closest('[hidden]')) return;
+      try { fn(el); } catch (e) { console.error(name, e); }
+    });
+  };
+  const todo = () => {
+    if (!listo) return;
+    alCambiar.forEach((f) => { try { f(); } catch (e) { console.error(e); } });
+    for (const n of draws.keys()) correr(n);
+  };
+  for (const i of ids) {
+    fetch('datos/' + i + '.json?v=2026111210560000')
+      .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then((d) => { st[i] = { status: 'ok', data: d }; version++; todo(); })
+      .catch(() => { st[i] = { status: 'error', data: [] }; version++; todo(); });
+  }
+  document.addEventListener('DOMContentLoaded', () => { listo = true; todo(); });
+  let t, ancho = innerWidth;
+  addEventListener('resize', () => { if (innerWidth === ancho) return; ancho = innerWidth; clearTimeout(t); t = setTimeout(todo, 150); });
+  return {
+    data,
+    calc(id, d) { calcs.set(id, { ...d, version: -1 }); },
+    draw(name, fn) { if (fn) draws.set(name, fn); if (listo) correr(name); },
+    onData(f) { alCambiar.push(f); if (listo) f(); },
+    params: () => params,
+    setParams(p) { params = { ...params, ...p }; todo(); },
+    resetParams() { params = JSON.parse(JSON.stringify(FILTROS)); todo(); },
+    // Las pestañas avisan con setLink al cambiar: se dibuja lo que quedó a la vista
+    setLink(n) { try { history.replaceState(null, '', '#' + n); } catch (e) {} setTimeout(todo); },
+    refresh() {},
+    colors: ['var(--c1)', 'var(--c2)', 'var(--c3)'],
+  };
+})();
+// "Exportar a Excel": en la web el archivo se baja directo
+window.claude = {
+  use: async (n) => n !== 'downloads' ? null : {
+    save: async ({ filename, data }) => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(data instanceof Blob ? data : new Blob([data]));
+      a.download = filename;
+      document.body.append(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+      return { status: 'saved' };
+    },
+  },
+};
+</script>
+</head>
+<body>
+<div class="pagina" id="dash-root">
+<p class="al-dia">Se actualiza todos los días a las 7:45 con los datos de Gescom.</p>
+
+<style>
+.rv{font-family:var(--font-anthropic-sans);display:flex;flex-direction:column;gap:var(--cds-gap-lg)}
+.rv-head{display:flex;flex-direction:column;gap:var(--cds-gap-xs)}
+.rv-head h1{font-family:var(--font-anthropic-serif);font-weight:400;font-size:var(--cds-font-size-title);margin:0;text-wrap:balance}
+.rv-take{margin:0;color:var(--color-fg-muted);max-width:75ch}
+.rv .rv-take b{color:var(--color-fg);font-weight:600}
+.rv-al{font-size:var(--cds-font-size-caption);color:var(--color-fg-muted);margin:0}
+.rv-bar{display:flex;flex-wrap:wrap;gap:var(--cds-gap-sm);align-items:center}
+.rv-bar label{font-size:var(--cds-font-size-caption);color:var(--color-fg-muted);display:flex;gap:var(--cds-gap-xs);align-items:center}
+.rv select,.rv input[type=search]{font:inherit;font-size:var(--cds-font-size-caption);padding:var(--cds-pad-xs) var(--cds-pad-sm);border:1px solid var(--color-border-line);border-radius:var(--cds-radius);background:var(--color-panel);color:var(--color-fg);max-width:100%}
+.rv-campo{font-size:var(--cds-font-size-caption);color:var(--color-fg-muted);display:flex;gap:var(--cds-gap-xs);align-items:center}
+.rv-msel{position:relative}
+.rv-multi summary{list-style:none;cursor:pointer;font-size:var(--cds-font-size-caption);color:var(--color-fg);padding:var(--cds-pad-xs) var(--cds-pad-sm);border:1px solid var(--color-border-line);border-radius:var(--cds-radius);background:var(--color-panel);min-width:11rem;white-space:nowrap}
+.rv-multi summary::-webkit-details-marker{display:none}
+.rv-multi summary::after{content:" ▾";color:var(--color-fg-muted)}
+.rv-multi summary:focus-visible{outline:2px solid var(--color-fg);outline-offset:2px}
+.rv-pop{position:absolute;z-index:5;top:calc(100% + 4px);left:0;width:min(20rem,80vw);background:var(--cds-surface-popover);border:1px solid var(--cds-border);border-radius:var(--cds-radius);box-shadow:var(--cds-shadow-popover);padding:var(--cds-pad-sm);display:flex;flex-direction:column;gap:var(--cds-gap-xs)}
+.rv-lista{max-height:18rem;overflow:auto;display:flex;flex-direction:column}
+.rv-lista label{display:flex;gap:var(--cds-gap-xs);align-items:center;padding:2px 0;font-size:var(--cds-font-size-caption);color:var(--color-fg);cursor:pointer}
+.rv-btn{font:inherit;font-size:var(--cds-font-size-caption);padding:var(--cds-pad-xs) var(--cds-pad-sm);border:1px solid var(--color-border-line);border-radius:var(--cds-radius);background:var(--color-panel);color:var(--color-fg);cursor:pointer}
+.rv-btn:focus-visible,.rv-tab:focus-visible{outline:2px solid var(--color-fg);outline-offset:2px}
+.rv-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr));gap:var(--cds-gap-md)}
+.rv-tile{background:var(--color-panel);border:1px solid var(--color-border-line);border-radius:var(--cds-radius);padding:var(--cds-pad-lg);display:flex;flex-direction:column;gap:var(--cds-gap-xs);min-width:0}
+.rv-tile .lbl{font-size:var(--cds-font-size-caption);color:var(--color-fg-muted)}
+.rv-tile .big{font-family:var(--font-anthropic-serif);font-weight:400;font-size:var(--cds-font-size-title);font-variant-numeric:tabular-nums;line-height:1.15}
+.rv-tile .sub{font-size:var(--cds-font-size-caption);color:var(--color-fg-muted);font-variant-numeric:tabular-nums}
+.rv-tile.alerta{border-color:color-mix(in srgb,var(--color-bad) 45%,var(--color-border-line))}
+.rv-tile.alerta .big{color:var(--color-bad)}
+.rv .sube{color:var(--color-ok)} .rv .baja{color:var(--color-bad)}
+.rv-tabs{display:flex;flex-wrap:wrap;gap:var(--cds-gap-xs);border-bottom:1px solid var(--color-border-line)}
+.rv-tab{background:none;border:0;border-bottom:2px solid transparent;padding:var(--cds-pad-sm) var(--cds-pad-md);font:inherit;color:var(--color-fg-muted);cursor:pointer}
+.rv-tab[aria-selected=true]{color:var(--color-fg);border-bottom-color:var(--color-fg)}
+.rv-page{display:flex;flex-direction:column;gap:var(--cds-gap-md)}
+.rv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,26rem),1fr));gap:var(--cds-gap-md)}
+.rv-card{background:var(--color-panel);border:1px solid var(--color-border-line);border-radius:var(--cds-radius);padding:var(--cds-pad-lg);display:flex;flex-direction:column;gap:var(--cds-gap-sm);min-width:0}
+.rv-card h2{font-size:var(--cds-font-size-heading);font-weight:var(--cds-font-weight-medium);margin:0}
+.rv-note{font-size:var(--cds-font-size-caption);color:var(--color-fg-muted);margin:0;max-width:80ch}
+.rv-scroll{max-height:34rem;overflow:auto}
+.rv-wide{overflow-x:auto}
+table.rv-t{width:100%;border-collapse:collapse;font-size:var(--cds-font-size-caption);font-variant-numeric:tabular-nums}
+.rv-t th{position:sticky;top:0;z-index:1;background:var(--color-panel);text-align:left;font-weight:var(--cds-font-weight-medium);color:var(--color-fg-muted);padding:var(--cds-pad-xs) var(--cds-pad-sm);border-bottom:1px solid var(--color-border-line);white-space:nowrap}
+.rv-t td{padding:var(--cds-pad-xs) var(--cds-pad-sm);border-bottom:1px solid var(--color-border-line);vertical-align:top}
+.rv-t .n{text-align:right;white-space:nowrap}
+.rv-t tr.sin td{color:var(--color-bad)}
+.rv-t tr.sin{background:color-mix(in srgb,var(--color-bad) 9%,transparent)}
+.rv-t.clic tbody tr{cursor:pointer}
+.rv-t tbody tr.sel{background:color-mix(in srgb,var(--color-fg) 8%,transparent)}
+.rv-in{display:inline-block;height:.4rem;border-radius:2px;background:var(--cds-chart-muted);margin-right:var(--cds-gap-xs);vertical-align:middle}
+.rv-mx td.c{cursor:pointer;min-width:7.5rem}
+.rv-mx td.c:hover{outline:1px solid var(--color-fg-muted);outline-offset:-1px}
+.rv-mx .ruta{font-weight:var(--cds-font-weight-medium);color:var(--color-fg)}
+.rv-mx .s{color:var(--color-bad)}
+.rv-mx .vac{color:var(--color-fg-muted)}
+.rv-chart{position:relative;min-height:240px}
+.rv-tip{position:absolute;background:var(--cds-surface-popover);border:1px solid var(--cds-border);border-radius:var(--cds-radius);box-shadow:var(--cds-shadow-popover);padding:var(--cds-pad-xs) var(--cds-pad-sm);font-size:var(--cds-font-size-caption);pointer-events:none;white-space:nowrap;z-index:2}
+.rv-tip .t{color:var(--cds-text-secondary)}
+.rv-ley{display:flex;flex-wrap:wrap;gap:var(--cds-gap-md);font-size:var(--cds-font-size-caption);color:var(--color-fg-muted)}
+.rv-ley i{display:inline-block;width:.8rem;height:2px;vertical-align:middle;margin-right:var(--cds-gap-xs)}
+.rv-chip{font:inherit;font-size:var(--cds-font-size-caption);border:1px solid var(--color-border-line);border-radius:999px;background:var(--color-bg);color:var(--color-fg);padding:2px var(--cds-pad-sm);cursor:pointer}
+[data-dash-source-state=refreshing]{opacity:.5;transition:opacity var(--cds-dur-slow)}
+[data-dash-source-state=empty]{color:transparent}
+</style>
+
+<div class="rv">
+  <header class="rv-head">
+    <h1>Rutas y venta del mes</h1>
+    <p class="rv-take">Al <b data-draw="corte" data-source="info" data-field="ultimo_dia">—</b> se vendieron <b data-draw="k-venta" data-source="kpi" data-field="venta">—</b>, <b data-draw="k-var" data-source="kpi" data-field="variacion">—</b> que el mes anterior al mismo día. <b data-draw="k-sin" data-source="kpi" data-field="sin_compra">—</b> clientes de ruta todavía no compraron este mes.</p>
+    <p class="rv-al">Datos de Gescom al <span data-draw="datos-al" data-source="info" data-field="datos_al">—</span>. Venta neta sin IVA: ventas y débitos menos devoluciones, por día de carga del pedido. Con un proveedor elegido, todos los números, rutas y clientes sin compra se calculan solo con ese proveedor.</p>
+  </header>
+
+  <div class="rv-bar">
+    <div class="rv-campo"><span>Vendedores</span><div class="rv-msel" id="rv-vend" data-draw="sel-vend" data-source="kpi">—</div></div>
+    <label for="rv-dia">Día de visita
+      <select id="rv-dia" class="rv-dia">
+        <option value="">Todos los días</option>
+        <option>Lunes</option><option>Martes</option><option>Miércoles</option>
+        <option>Jueves</option><option>Viernes</option><option>Sin día</option>
+      </select>
+    </label>
+    <label for="rv-prov">Proveedor <select id="rv-prov" data-draw="sel-prov" data-source="prov_mes"></select></label>
+    <button type="button" class="rv-btn rv-reset">Limpiar filtros</button>
+  </div>
+
+  <div class="rv-tiles">
+    <div class="rv-tile">
+      <span class="lbl">Venta del mes al día</span>
+      <span class="big dash-skeleton" data-draw="t-venta" data-source="kpi" data-field="venta">—</span>
+      <span class="sub"><span data-draw="t-pedidos" data-source="kpi" data-field="pedidos">—</span> pedidos</span>
+    </div>
+    <div class="rv-tile">
+      <span class="lbl">Mes anterior al mismo día</span>
+      <span class="big dash-skeleton" data-draw="t-ant" data-source="kpi" data-field="ant_mismo_dia">—</span>
+      <span class="sub">Variación <span data-draw="t-varp" data-source="kpi" data-field="variacion">—</span> · mes anterior completo <span data-draw="t-anttot" data-source="kpi" data-field="ant_total">—</span></span>
+    </div>
+    <div class="rv-tile">
+      <span class="lbl">Clientes de ruta que compraron</span>
+      <span class="big dash-skeleton" data-draw="t-con" data-source="kpi" data-field="con_compra">—</span>
+      <span class="sub">de <span data-draw="t-tot" data-source="kpi" data-field="clientes_ruta">—</span> clientes · cobertura <span data-draw="t-cob" data-source="kpi" data-field="cobertura">—</span></span>
+    </div>
+    <div class="rv-tile alerta">
+      <span class="lbl">Clientes sin compra del mes</span>
+      <span class="big dash-skeleton" data-draw="t-sin" data-source="kpi" data-field="sin_compra">—</span>
+      <span class="sub"><button type="button" class="rv-btn rv-ir" data-tab="clientes">Ver la lista en rojo</button></span>
+    </div>
+  </div>
+
+  <nav class="rv-tabs" role="tablist" aria-label="Secciones">
+    <button type="button" class="rv-tab" role="tab" data-tab="rutas" id="tab-rutas">Rutas por vendedor y día</button>
+    <button type="button" class="rv-tab" role="tab" data-tab="venta" id="tab-venta">Venta al día</button>
+    <button type="button" class="rv-tab" role="tab" data-tab="productos" id="tab-productos">Proveedores, marcas y artículos</button>
+    <button type="button" class="rv-tab" role="tab" data-tab="clientes" id="tab-clientes">Clientes sin compra</button>
+  </nav>
+
+  <section class="rv-page" id="rutas" hidden>
+    <div class="rv-card" id="card-matriz">
+      <h2>Rutas de cada vendedor por día de visita</h2>
+      <p class="rv-note">Cada casilla muestra la ruta, cuántos clientes de esa ruta compraron este mes al vendedor y, en rojo, cuántos no. Con un proveedor elegido, cuenta solo las compras de ese proveedor. Cuanto más rojo el fondo, más clientes sin compra. Tocá una casilla para ver sus clientes.</p>
+      <div class="rv-bar">
+        <div class="rv-campo"><span>Vendedores</span><div class="rv-msel" id="rv-vend-rutas" data-draw="sel-vend" data-source="kpi">—</div></div>
+        <button type="button" class="rv-btn rv-exportar" hidden>Exportar a Excel</button>
+        <span class="rv-note rv-exp rv-exp-ok" hidden>Listo, se guardó el Excel.</span>
+        <span class="rv-note rv-exp rv-exp-cancel" hidden>Exportación cancelada.</span>
+        <span class="rv-note rv-exp rv-exp-no" hidden>No se pudo guardar el Excel desde esta vista.</span>
+      </div>
+      <p class="rv-note rv-exportar-nota" hidden>El Excel sale con los vendedores, el día y el proveedor elegidos: una hoja con las rutas y otra abierta por proveedor (todos los que vende cada vendedor, o solo el elegido).</p>
+      <div class="rv-wide rv-scroll" data-draw="matriz" data-source="rutas">—</div>
+    </div>
+    <div class="rv-card" id="card-rutas">
+      <h2>Detalle de rutas</h2>
+      <p class="rv-note">Venta del mes a los clientes de la ruta hecha por su vendedor (del proveedor elegido, si hay uno).</p>
+      <div class="rv-wide rv-scroll">
+        <table class="rv-t clic" data-source="rutas" data-row-key="vendedor,dia,prov">
+          <thead><tr>
+            <th data-field="vendedor_nombre">Vendedor</th><th data-field="dia">Día</th><th data-field="rutas">Ruta</th>
+            <th class="n" data-field="clientes">Clientes</th><th class="n" data-field="con_compra">Compraron</th>
+            <th class="n" data-field="sin_compra">Sin compra</th><th class="n" data-field="cobertura">Cobertura</th><th class="n" data-field="venta">Venta del mes</th>
+          </tr></thead>
+          <tbody data-draw="t-rutas"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="rv-page" id="venta" hidden>
+    <div class="rv-grid">
+      <div class="rv-card" id="card-dia">
+        <h2>Venta por día del mes en curso</h2>
+        <p class="rv-note">Venta neta de cada día de carga. Los domingos y feriados casi no hay carga.</p>
+        <div class="rv-chart" data-draw="g-dia" data-source="acumulado"></div>
+      </div>
+      <div class="rv-card" id="card-acum">
+        <h2>Venta acumulada contra el mes anterior</h2>
+        <div class="rv-ley"><span><i class="rv-sw0"></i>Mes en curso</span><span><i style="background:var(--cds-chart-muted)"></i>Mes anterior</span></div>
+        <div class="rv-chart" data-draw="g-acum" data-source="acumulado"></div>
+      </div>
+    </div>
+    <div class="rv-card" id="card-vendedores">
+      <h2>Venta del mes por vendedor</h2>
+      <p class="rv-note">Comparada con el mes anterior hasta el mismo día, del proveedor elegido si hay uno. Tocá vendedores para sumarlos o quitarlos del filtro de todo el tablero.</p>
+      <div class="rv-wide rv-scroll">
+        <table class="rv-t clic" data-source="kpi" data-row-key="vend,prov">
+          <thead><tr>
+            <th data-field="vend">Código</th><th data-field="nombre">Vendedor</th>
+            <th class="n" data-field="venta">Venta del mes</th><th class="n" data-field="ant_mismo_dia">Mes anterior al mismo día</th>
+            <th class="n" data-field="variacion">Variación</th><th class="n" data-field="pedidos">Pedidos</th>
+            <th class="n" data-field="cobertura">Cobertura de ruta</th>
+          </tr></thead>
+          <tbody data-draw="t-vend"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="rv-page" id="productos" hidden>
+    <div class="rv-card" id="card-prov">
+      <h2>Venta del mes por proveedor</h2>
+      <p class="rv-note">Tocá un proveedor para ver solo sus marcas y artículos.</p>
+      <div class="rv-wide rv-scroll">
+        <table class="rv-t clic" data-source="prov_mes" data-row-key="vend,proveedor">
+          <thead><tr>
+            <th data-field="proveedor">Proveedor</th><th class="n" data-field="neto">Venta del mes</th>
+            <th class="n" data-field="participacion">Participación</th><th class="n" data-field="unidades">Unidades</th><th class="n" data-field="articulos">Artículos</th>
+          </tr></thead>
+          <tbody data-draw="t-prov"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="rv-bar">
+      <span class="rv-note rv-prov-txt" hidden>Proveedor elegido:</span>
+      <button type="button" class="rv-chip rv-quitar-prov" data-draw="chip-prov" data-source="prov_mes" hidden>—</button>
+    </div>
+    <div class="rv-grid">
+      <div class="rv-card" id="card-marcas">
+        <h2>Venta del mes por marca</h2>
+        <p class="rv-note">La marca es la familia del artículo en Gescom.</p>
+        <div class="rv-wide rv-scroll">
+          <table class="rv-t" data-source="marca_mes" data-row-key="vend,marca">
+            <thead><tr>
+              <th data-field="marca">Marca</th><th data-field="proveedor">Proveedor</th>
+              <th class="n" data-field="neto">Venta del mes</th><th class="n" data-field="unidades">Unidades</th>
+            </tr></thead>
+            <tbody data-draw="t-marca"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="rv-card" id="card-arts">
+        <h2>Venta del mes por artículo</h2>
+        <label for="rv-buscar-art" class="rv-note">Buscar artículo <input type="search" id="rv-buscar-art" class="rv-buscar-art" placeholder="Nombre, código o marca"></label>
+        <div class="rv-wide rv-scroll">
+          <table class="rv-t" data-source="art_mes" data-row-key="vend,articulo">
+            <thead><tr>
+              <th data-field="articulo">Código</th><th data-field="descripcion">Artículo</th><th data-field="marca">Marca</th>
+              <th class="n" data-field="neto">Venta del mes</th><th class="n" data-field="unidades">Unidades</th>
+            </tr></thead>
+            <tbody data-draw="t-art"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="rv-page" id="clientes" hidden>
+    <div class="rv-card" id="card-clientes">
+      <h2>Clientes de ruta</h2>
+      <p class="rv-note"><b data-draw="c-tot" data-source="cuenta" data-field="clientes">—</b> clientes con el filtro elegido, <b data-draw="c-sin" data-source="cuenta" data-field="sin_compra" class="baja">—</b> sin compra este mes (en rojo). Sin compra quiere decir que no le compraron nada este mes al vendedor de su ruta; con un proveedor elegido, nada de ese proveedor. Los clientes de mostrador y los que no tienen ruta no figuran.</p>
+      <div class="rv-bar">
+        <div class="rv-campo"><span>Vendedores</span><div class="rv-msel" id="rv-vend-cli" data-draw="sel-vend" data-source="kpi">—</div></div>
+        <label for="rv-buscar-cli">Buscar <input type="search" id="rv-buscar-cli" class="rv-buscar-cli" placeholder="Nombre, código o localidad"></label>
+        <label for="rv-solo-sin"><input type="checkbox" id="rv-solo-sin" class="rv-solo-sin"> Solo sin compra</label>
+      </div>
+      <div class="rv-wide rv-scroll">
+        <table class="rv-t" data-source="clientes" data-row-key="cliente">
+          <thead><tr>
+            <th data-field="cliente">Código</th><th data-field="nombre">Cliente</th><th data-field="localidad">Localidad</th>
+            <th data-field="rubro">Rubro</th><th data-field="vendedor_nombre">Vendedor</th><th data-field="ruta">Ruta</th><th data-field="dia">Día</th>
+            <th class="n" data-field="venta_vendedor">Venta del mes</th><th class="n" data-field="ultima_compra">Última compra</th>
+            <th data-source="cli_compro" data-field="proveedores">Proveedores que compró</th>
+          </tr></thead>
+          <tbody data-draw="t-cli"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>(() => {
+// Formatos y estado compartidos por todos los scripts
+const MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+const num = (v, d = 0) => Number(v).toLocaleString('es-AR', {maximumFractionDigits: d, minimumFractionDigits: d});
+window.RV = {
+  DIAS: ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Sin día'],
+  money: (v) => v == null ? '—' : Math.abs(v) >= 1e6 ? '$ ' + num(v / 1e6, 1) + ' M' : '$ ' + num(v),
+  full: (v) => v == null ? '—' : '$ ' + num(v),
+  n: (v) => v == null ? '—' : num(v),
+  pct: (v) => v == null ? '—' : num(v * 100, 1) + '%',
+  signo: (v) => v == null ? '—' : (v >= 0 ? '+' : '') + num(v * 100, 1) + '%',
+  fecha: (s) => s ? s.slice(8, 10) + '/' + s.slice(5, 7) + '/' + s.slice(0, 4) : '—',
+  mes: (s) => MESES[Number(s.slice(5, 7)) - 1],
+  // Vendedores elegidos: lista vacía = todos
+  vends: () => { const v = dash.params().vends; return Array.isArray(v) ? v.map(String) : []; },
+  enVend: (c) => { const v = RV.vends(); return !v.length || v.includes(String(c)); },
+  // Filas de un cálculo por vendedor para lo elegido: con uno o ninguno, las suyas ("todos");
+  // con varios, la suma por `clave` de los campos `sumar`.
+  deVends(data, clave, sumar) {
+    const vs = RV.vends();
+    if (vs.length <= 1) { const v = vs[0] || 'todos'; return {suma: false, rows: data.filter((r) => r.vend === v)}; }
+    const m = new Map();
+    for (const r of data) {
+      if (!vs.includes(r.vend)) continue;
+      const k = clave(r);
+      if (!m.has(k)) m.set(k, {...r, vend: '', ...Object.fromEntries(sumar.map((f) => [f, null]))});
+      const x = m.get(k);
+      for (const f of sumar) if (r[f] != null) x[f] = (x[f] || 0) + Number(r[f]);
+    }
+    return {suma: true, rows: [...m.values()]};
+  },
+  dia: () => dash.params().dia || '',
+  prov: () => dash.params().prov || '',
+  key: (...p) => p.map((x) => encodeURIComponent(x)).join(','),
+  // Llena un tbody: cols = [[campo, formato?, clase?]]
+  filas(tb, rows, cols, keyOf, clase) {
+    tb.replaceChildren(...rows.map((r) => {
+      const tr = document.createElement('tr');
+      const key = keyOf(r);
+      if (key != null) tr.dataset.key = key;
+      const c = clase && clase(r);
+      if (c) tr.className = c;
+      for (const [f, fmt, cl] of cols) {
+        const td = document.createElement('td');
+        if (cl) td.className = cl;
+        td.textContent = fmt ? fmt(r[f], r) : (r[f] ?? '');
+        tr.append(td);
+      }
+      return tr;
+    }));
+  },
+  tip(box) {
+    const t = document.createElement('div');
+    t.className = 'rv-tip';
+    t.hidden = true;
+    box.append(t);
+    return {
+      show(x, y, titulo, lineas) {
+        const h = document.createElement('div');
+        h.className = 't';
+        h.textContent = titulo;
+        t.replaceChildren(h, ...lineas.map((l) => { const d = document.createElement('div'); d.textContent = l; return d; }));
+        t.hidden = false;
+        const w = t.offsetWidth, W = box.clientWidth;
+        t.style.left = Math.max(0, Math.min(W - w, x + 12)) + 'px';
+        t.style.top = Math.max(0, y - 40) + 'px';
+      },
+      hide() { t.hidden = true; },
+    };
+  },
+};
+})();</script>
+
+<script>(() => {
+dash.calc('kpi', {
+  title: 'Venta y cobertura por vendedor',
+  description: 'Por vendedor ("todos" suma todos) y proveedor ("" es todos): venta del mes hasta el último día con datos, el mes anterior hasta el mismo día y completo, pedidos, y clientes de ruta con y sin compra al vendedor de la ruta.',
+  inputs: ['diaria', 'diaria_prov', 'info', 'clientes', 'cli_prov'],
+  fn: (diaria, diaria_prov, info, clientes, cli_prov) => {
+    const i = info[0];
+    const limAnt = i.mes_anterior.slice(0, 8) + i.ultimo_dia.slice(8, 10);
+    const nombres = new Map([['todos', 'Todos los vendedores']]);
+    for (const r of [...diaria, ...clientes]) nombres.set(r.vendedor, r.vendedor_nombre);
+    const m = new Map();
+    const g = (v, p) => {
+      const k = v + '|' + p;
+      if (!m.has(k)) m.set(k, {vend: v, prov: p, nombre: nombres.get(v) || v, venta: 0, ant_mismo_dia: 0, ant_total: 0, pedidos: 0, clientes_ruta: 0, con_compra: 0});
+      return m.get(k);
+    };
+    const sumar = (x, r) => {
+      const n = Number(r.neto) || 0;
+      if (r.fecha >= i.mes) { x.venta += n; x.pedidos += Number(r.pedidos) || 0; }
+      else { x.ant_total += n; if (r.fecha <= limAnt) x.ant_mismo_dia += n; }
+    };
+    g('todos', '');
+    for (const r of diaria) for (const x of [g('todos', ''), g(r.vendedor, '')]) sumar(x, r);
+    for (const r of diaria_prov) for (const x of [g('todos', r.proveedor), g(r.vendedor, r.proveedor)]) sumar(x, r);
+    // Proveedores que cada cliente le compró al vendedor
+    const compro = new Map();
+    for (const r of cli_prov) if (Number(r.neto) > 0) {
+      const k = r.cliente + '|' + r.vendedor;
+      if (!compro.has(k)) compro.set(k, new Set());
+      compro.get(k).add(r.proveedor);
+    }
+    const provs = [...new Set(diaria_prov.map((r) => r.proveedor))];
+    for (const c of clientes) {
+      const ps = compro.get(c.cliente + '|' + c.vendedor) || new Set();
+      for (const p of ['', ...provs]) {
+        const si = p ? ps.has(p) : Number(c.venta_vendedor) > 0;
+        for (const x of [g('todos', p), g(c.vendedor, p)]) { x.clientes_ruta += 1; if (si) x.con_compra += 1; }
+      }
+    }
+    return [...m.values()].map((x) => ({...x,
+      sin_compra: x.clientes_ruta - x.con_compra,
+      cobertura: x.clientes_ruta ? x.con_compra / x.clientes_ruta : null,
+      variacion: x.ant_mismo_dia ? x.venta / x.ant_mismo_dia - 1 : null}));
+  },
+});
+
+dash.calc('acumulado', {
+  title: 'Venta por día y acumulada',
+  description: 'Por vendedor ("todos" incluido), proveedor ("" es todos) y día del mes: la venta del día en curso y la acumulada de este mes y del anterior.',
+  inputs: ['diaria', 'diaria_prov', 'info'],
+  fn: (diaria, diaria_prov, info) => {
+    const i = info[0];
+    const diasMes = (s) => new Date(Number(s.slice(0, 4)), Number(s.slice(5, 7)), 0).getDate();
+    const nAct = diasMes(i.mes), nAnt = diasMes(i.mes_anterior), ult = Number(i.ultimo_dia.slice(8, 10));
+    const m = new Map();
+    const g = (v, p) => {
+      const k = v + '|' + p;
+      if (!m.has(k)) m.set(k, {vend: v, prov: p, act: Array(32).fill(0), ant: Array(32).fill(0)});
+      return m.get(k);
+    };
+    g('todos', '');
+    const sumar = (r, claves) => {
+      const d = Number(r.fecha.slice(8, 10)), cual = r.fecha >= i.mes ? 'act' : 'ant';
+      for (const x of claves) x[cual][d] += Number(r.neto) || 0;
+    };
+    for (const r of diaria) sumar(r, [g('todos', ''), g(r.vendedor, '')]);
+    for (const r of diaria_prov) sumar(r, [g('todos', r.proveedor), g(r.vendedor, r.proveedor)]);
+    const rows = [];
+    for (const x of m.values()) {
+      let a = 0, b = 0;
+      for (let d = 1; d <= Math.max(nAct, nAnt); d++) {
+        a += x.act[d]; b += x.ant[d];
+        rows.push({vend: x.vend, prov: x.prov, dia: d,
+          venta_dia: d <= ult ? x.act[d] : null,
+          acum: d <= ult ? a : null,
+          acum_ant: d <= nAnt ? b : null});
+      }
+    }
+    return rows;
+  },
+});
+
+dash.calc('rutas', {
+  title: 'Rutas por vendedor y día',
+  description: 'Clientes activos de cada vendedor por día de visita y proveedor ("" es todos): rutas, cuántos compraron este mes al vendedor, cuántos no y la venta.',
+  inputs: ['clientes', 'cli_prov'],
+  fn: (clientes, cli_prov) => {
+    const venta = new Map();
+    for (const r of cli_prov) venta.set(r.cliente + '|' + r.vendedor + '|' + r.proveedor, Number(r.neto) || 0);
+    const provs = [...new Set(cli_prov.map((r) => r.proveedor))];
+    const m = new Map();
+    for (const c of clientes) {
+      for (const p of ['', ...provs]) {
+        const k = c.vendedor + '|' + c.dia + '|' + p;
+        if (!m.has(k)) m.set(k, {vendedor: c.vendedor, vendedor_nombre: c.vendedor_nombre, dia: c.dia, prov: p, rutas: new Set(), clientes: 0, con_compra: 0, venta: 0});
+        const x = m.get(k);
+        const v = p ? venta.get(c.cliente + '|' + c.vendedor + '|' + p) || 0 : Number(c.venta_vendedor) || 0;
+        if (c.ruta) x.rutas.add(c.ruta);
+        x.clientes += 1;
+        x.venta += v;
+        if (v > 0) x.con_compra += 1;
+      }
+    }
+    return [...m.values()].map((x) => ({...x, rutas: [...x.rutas].sort().join(', '),
+      sin_compra: x.clientes - x.con_compra, cobertura: x.con_compra / x.clientes}));
+  },
+});
+
+dash.calc('cuenta', {
+  title: 'Clientes de ruta por filtro',
+  description: 'Clientes de ruta y cuántos no compraron este mes, por vendedor, día y proveedor ("todos" y "" son el total).',
+  inputs: ['clientes', 'cli_prov'],
+  fn: (clientes, cli_prov) => {
+    const compro = new Map();
+    for (const r of cli_prov) if (Number(r.neto) > 0) {
+      const k = r.cliente + '|' + r.vendedor;
+      if (!compro.has(k)) compro.set(k, new Set());
+      compro.get(k).add(r.proveedor);
+    }
+    const provs = [...new Set(cli_prov.map((r) => r.proveedor))];
+    const m = new Map();
+    for (const c of clientes) {
+      const ps = compro.get(c.cliente + '|' + c.vendedor) || new Set();
+      for (const p of ['', ...provs]) {
+        const sin = p ? !ps.has(p) : !(Number(c.venta_vendedor) > 0);
+        for (const v of ['todos', c.vendedor]) for (const d of ['', c.dia]) {
+          const k = v + '|' + d + '|' + p;
+          if (!m.has(k)) m.set(k, {vend: v, dia: d, prov: p, clientes: 0, sin_compra: 0});
+          const x = m.get(k);
+          x.clientes += 1;
+          if (sin) x.sin_compra += 1;
+        }
+      }
+    }
+    return [...m.values()];
+  },
+});
+
+dash.calc('cli_compro', {
+  title: 'Proveedores que compró cada cliente',
+  description: 'Para cada cliente de ruta, los proveedores que le compró este mes al vendedor de su ruta, de mayor a menor venta.',
+  inputs: ['clientes', 'cli_prov'],
+  fn: (clientes, cli_prov) => {
+    const m = new Map();
+    for (const r of cli_prov) if (Number(r.neto) > 0) {
+      const k = r.cliente + '|' + r.vendedor;
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(r);
+    }
+    return clientes.map((c) => ({cliente: c.cliente,
+      proveedores: (m.get(c.cliente + '|' + c.vendedor) || []).sort((a, b) => b.neto - a.neto).map((r) => r.proveedor).join(' · ')}));
+  },
+});
+
+// Proveedor, marca y artículo: por vendedor y para "todos"
+dash.calc('prov_mes', {
+  title: 'Venta del mes por proveedor',
+  description: 'Venta neta y unidades del mes por proveedor, para cada vendedor y para todos.',
+  inputs: ['articulos'],
+  fn: (articulos) => {
+    const m = new Map(), tot = new Map();
+    for (const r of articulos) for (const v of ['todos', r.vendedor]) {
+      const k = v + '|' + r.proveedor;
+      if (!m.has(k)) m.set(k, {vend: v, proveedor: r.proveedor, neto: 0, unidades: 0, arts: new Set()});
+      const x = m.get(k);
+      x.neto += Number(r.neto) || 0; x.unidades += Number(r.unidades) || 0; x.arts.add(r.articulo);
+      tot.set(v, (tot.get(v) || 0) + (Number(r.neto) || 0));
+    }
+    return [...m.values()].map(({arts, ...x}) => ({...x, articulos: arts.size, participacion: tot.get(x.vend) ? x.neto / tot.get(x.vend) : null}));
+  },
+});
+
+dash.calc('marca_mes', {
+  title: 'Venta del mes por marca',
+  description: 'Venta neta y unidades del mes por marca (familia de Gescom) y su proveedor, para cada vendedor y para todos.',
+  inputs: ['articulos'],
+  fn: (articulos) => {
+    const m = new Map();
+    for (const r of articulos) for (const v of ['todos', r.vendedor]) {
+      const k = v + '|' + r.marca;
+      if (!m.has(k)) m.set(k, {vend: v, marca: r.marca, proveedor: r.proveedor, neto: 0, unidades: 0});
+      const x = m.get(k);
+      x.neto += Number(r.neto) || 0; x.unidades += Number(r.unidades) || 0;
+    }
+    return [...m.values()];
+  },
+});
+
+dash.calc('art_mes', {
+  title: 'Venta del mes por artículo',
+  description: 'Venta neta y unidades del mes por artículo, para cada vendedor y para todos.',
+  inputs: ['articulos'],
+  fn: (articulos) => {
+    const m = new Map();
+    for (const r of articulos) for (const v of ['todos', r.vendedor]) {
+      const k = v + '|' + r.articulo;
+      if (!m.has(k)) m.set(k, {vend: v, articulo: r.articulo, descripcion: r.descripcion, marca: r.marca, proveedor: r.proveedor, neto: 0, unidades: 0});
+      const x = m.get(k);
+      x.neto += Number(r.neto) || 0; x.unidades += Number(r.unidades) || 0;
+    }
+    return [...m.values()];
+  },
+});
+})();</script>
+
+<script>(() => {
+// Pestañas, filtros y botones
+const PAGINAS = ['rutas', 'venta', 'productos', 'clientes'];
+window.rvTab = (name) => {
+  document.querySelectorAll('.rv-tab').forEach((t) => t.setAttribute('aria-selected', String(t.dataset.tab === name)));
+  document.querySelectorAll('.rv-page').forEach((s) => { s.hidden = s.id !== name; });
+  dash.setLink(name);
+};
+document.querySelectorAll('.rv-tab, .rv-ir').forEach((t) => t.addEventListener('click', () => rvTab(t.dataset.tab)));
+const pedido = location.hash.slice(1);
+rvTab(PAGINAS.includes(pedido) ? pedido : 'rutas');
+
+document.querySelectorAll('.rv-dia').forEach((s) => s.addEventListener('change', () => dash.setParams({dia: s.value})));
+document.querySelectorAll('.rv-reset').forEach((b) => b.addEventListener('click', () => dash.resetParams()));
+document.querySelectorAll('.rv-quitar-prov').forEach((b) => b.addEventListener('click', () => dash.setParams({prov: ''})));
+document.querySelectorAll('.rv-buscar-art').forEach((i) => i.addEventListener('input', () => dash.draw('t-art')));
+document.querySelectorAll('.rv-buscar-cli').forEach((i) => i.addEventListener('input', () => dash.draw('t-cli')));
+document.querySelectorAll('.rv-solo-sin').forEach((i) => i.addEventListener('change', () => dash.draw('t-cli')));
+
+dash.onData(() => {
+  document.querySelectorAll('.rv-dia').forEach((s) => { s.value = RV.dia(); });
+  const p = RV.prov();
+  document.querySelectorAll('.rv-quitar-prov, .rv-prov-txt').forEach((e) => { e.hidden = !p; });
+});
+})();</script>
+
+<script>(() => {
+// Encabezado, filtro de vendedor y tarjetas
+const kpiFila = () => {
+  const k = dash.data('kpi');
+  if (k.status !== 'ok') return null;
+  const p = RV.prov();
+  const {suma, rows} = RV.deVends(k.data.filter((x) => x.prov === p), () => 'x',
+    ['venta', 'ant_mismo_dia', 'ant_total', 'pedidos', 'clientes_ruta', 'con_compra', 'sin_compra']);
+  const r = rows[0];
+  if (!r || !suma) return r || null;
+  return {...r, suma, cobertura: r.clientes_ruta ? r.con_compra / r.clientes_ruta : null,
+    variacion: r.ant_mismo_dia ? r.venta / r.ant_mismo_dia - 1 : null};
+};
+const deKpi = (name, campo, fmt, color) => dash.draw(name, (el) => {
+  const r = kpiFila();
+  el.classList.remove('dash-skeleton');
+  if (!r) { el.textContent = '—'; return; }
+  // Con varios vendedores el número es una suma: deja de citar una fila
+  if (r.suma) { delete el.dataset.where; delete el.dataset.field; }
+  else { el.dataset.field = campo; el.dataset.where = 'vend=' + encodeURIComponent(r.vend) + '&prov=' + encodeURIComponent(r.prov); }
+  el.textContent = fmt(r[campo]);
+  if (color) { el.classList.toggle('sube', r[campo] >= 0); el.classList.toggle('baja', r[campo] < 0); }
+});
+deKpi('k-venta', 'venta', RV.money);
+deKpi('k-var', 'variacion', (v) => v == null ? '—' : 'un ' + RV.pct(Math.abs(v)) + (v >= 0 ? ' más' : ' menos'));
+deKpi('k-sin', 'sin_compra', RV.n);
+deKpi('t-venta', 'venta', RV.money);
+deKpi('t-pedidos', 'pedidos', RV.n);
+deKpi('t-ant', 'ant_mismo_dia', RV.money);
+deKpi('t-varp', 'variacion', RV.signo, true);
+deKpi('t-anttot', 'ant_total', RV.money);
+deKpi('t-con', 'con_compra', RV.n);
+deKpi('t-tot', 'clientes_ruta', RV.n);
+deKpi('t-cob', 'cobertura', RV.pct);
+deKpi('t-sin', 'sin_compra', RV.n);
+
+const deInfo = (name, fmt) => dash.draw(name, (el) => {
+  const d = dash.data('info');
+  el.textContent = d.status === 'ok' && d.data[0] ? fmt(d.data[0]) : '—';
+});
+deInfo('corte', (i) => RV.fecha(i.ultimo_dia));
+deInfo('datos-al', (i) => new Date(i.datos_al).toLocaleString('es-AR', {timeZone: 'America/Argentina/Buenos_Aires', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'}));
+
+dash.draw('sel-vend', (el) => {
+  const k = dash.data('kpi');
+  const abierto = !!el.querySelector('details[open]');
+  const scroll = el.querySelector('.rv-lista')?.scrollTop || 0;
+  const vs = k.status === 'ok' ? k.data.filter((x) => x.vend !== 'todos' && x.prov === '' && x.clientes_ruta + x.venta !== 0).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre))) : [];
+  const sel = RV.vends();
+  const det = document.createElement('details');
+  det.className = 'rv-multi';
+  det.open = abierto;
+  const sum = document.createElement('summary');
+  sum.textContent = !sel.length ? 'Todos los vendedores'
+    : sel.length === 1 ? (vs.find((x) => x.vend === sel[0])?.nombre || sel[0]) : sel.length + ' vendedores';
+  const caja = document.createElement('div');
+  caja.className = 'rv-pop';
+  const todos = document.createElement('button');
+  todos.type = 'button';
+  todos.className = 'rv-btn';
+  todos.textContent = 'Todos los vendedores';
+  todos.onclick = () => dash.setParams({vends: []});
+  const lista = document.createElement('div');
+  lista.className = 'rv-lista';
+  for (const x of vs) {
+    const lab = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = sel.includes(x.vend);
+    cb.onchange = () => dash.setParams({vends: cb.checked ? [...sel, x.vend] : sel.filter((c) => c !== x.vend)});
+    lab.append(cb, x.nombre + ' (' + x.vend + ')');
+    lista.append(lab);
+  }
+  // Para pedirle a Claude el PDF de rutas con estos vendedores (la página no puede bajar archivos)
+  const copiar = document.createElement('button');
+  copiar.type = 'button';
+  copiar.className = 'rv-btn';
+  copiar.textContent = 'Copiar la selección para exportar';
+  const texto = 'Exportar rutas de: ' + (sel.length
+    ? vs.filter((x) => sel.includes(x.vend)).map((x) => x.nombre + ' (' + x.vend + ')').join(', ')
+    : 'todos los vendedores');
+  const aviso = document.createElement('div');
+  aviso.className = 'rv-note';
+  aviso.hidden = true;
+  copiar.onclick = () => {
+    const listo = () => { aviso.textContent = 'Copiado. Pegalo en el chat con Claude.'; aviso.hidden = false; };
+    navigator.clipboard.writeText(texto).then(listo, () => { aviso.textContent = texto; aviso.hidden = false; });
+  };
+  caja.append(todos, lista);
+  det.append(sum, caja);
+  el.replaceChildren(det);
+  lista.scrollTop = scroll;
+});
+
+dash.draw('sel-prov', (sel) => {
+  const d = dash.data('prov_mes');
+  const ps = d.status === 'ok' ? d.data.filter((x) => x.vend === 'todos' && x.neto > 0).sort((a, b) => b.neto - a.neto) : [];
+  sel.replaceChildren(new Option('Todos los proveedores', ''), ...ps.map((x) => new Option(x.proveedor, x.proveedor)));
+  sel.value = RV.prov();
+  sel.onchange = () => dash.setParams({prov: sel.value});
+});
+})();</script>
+
+<script>(() => {
+// Rutas
+dash.draw('matriz', (el) => {
+  const d = dash.data('rutas');
+  if (d.status !== 'ok') { el.replaceChildren('—'); return; }
+  const dSel = RV.dia(), p = RV.prov();
+  const rows = d.data.filter((r) => r.prov === p && RV.enVend(r.vendedor) && (!dSel || r.dia === dSel));
+  const dias = RV.DIAS.filter((x) => rows.some((r) => r.dia === x));
+  const vends = [...new Map(rows.map((r) => [r.vendedor, r.vendedor_nombre])).entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+  const t = document.createElement('table');
+  t.className = 'rv-t rv-mx';
+  const hr = document.createElement('tr');
+  for (const h of ['Vendedor', ...dias]) { const th = document.createElement('th'); th.textContent = h; hr.append(th); }
+  const thead = document.createElement('thead'); thead.append(hr);
+  const tb = document.createElement('tbody');
+  for (const [cod, nom] of vends) {
+    const tr = document.createElement('tr');
+    const td0 = document.createElement('td'); td0.textContent = nom + ' (' + cod + ')'; tr.append(td0);
+    for (const dia of dias) {
+      const td = document.createElement('td');
+      const r = rows.find((x) => x.vendedor === cod && x.dia === dia);
+      if (!r) { td.className = 'vac'; td.textContent = '·'; tr.append(td); continue; }
+      td.className = 'c';
+      td.dataset.key = RV.key(cod, dia, p);
+      td.style.background = `color-mix(in srgb, var(--color-bad) ${Math.round((1 - r.cobertura) * 30)}%, transparent)`;
+      const a = document.createElement('div'); a.className = 'ruta'; a.textContent = 'Ruta ' + (r.rutas || '—');
+      const b = document.createElement('div'); b.textContent = RV.n(r.con_compra) + ' de ' + RV.n(r.clientes) + ' compraron';
+      const c = document.createElement('div'); c.className = 's'; c.textContent = RV.n(r.sin_compra) + ' sin compra';
+      td.append(a, b, c);
+      td.onclick = () => { dash.setParams({vends: [cod], dia}); rvTab('clientes'); };
+      tr.append(td);
+    }
+    tb.append(tr);
+  }
+  t.append(thead, tb);
+  el.replaceChildren(t);
+});
+
+// Exportar a Excel: un .xlsx armado acá mismo (zip sin comprimir + SpreadsheetML)
+const xlsx = (() => {
+  const enc = new TextEncoder();
+  const tabla = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; tabla[n] = c >>> 0; }
+  const crc = (b) => { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = tabla[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+  const zip = (archivos) => {
+    const partes = [], central = [];
+    let off = 0;
+    for (const [nombre, texto] of archivos) {
+      const nm = enc.encode(nombre), d = enc.encode(texto), c = crc(d);
+      const h = new DataView(new ArrayBuffer(30));
+      h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(12, 0x21, true);
+      h.setUint32(14, c, true); h.setUint32(18, d.length, true); h.setUint32(22, d.length, true); h.setUint16(26, nm.length, true);
+      partes.push(new Uint8Array(h.buffer), nm, d);
+      const cd = new DataView(new ArrayBuffer(46));
+      cd.setUint32(0, 0x02014b50, true); cd.setUint16(4, 20, true); cd.setUint16(6, 20, true); cd.setUint16(8, 0x0800, true); cd.setUint16(14, 0x21, true);
+      cd.setUint32(16, c, true); cd.setUint32(20, d.length, true); cd.setUint32(24, d.length, true); cd.setUint16(28, nm.length, true); cd.setUint32(42, off, true);
+      central.push(new Uint8Array(cd.buffer), nm);
+      off += 30 + nm.length + d.length;
+    }
+    const tam = central.reduce((s, p) => s + p.length, 0);
+    const fin = new DataView(new ArrayBuffer(22));
+    fin.setUint32(0, 0x06054b50, true); fin.setUint16(8, archivos.length, true); fin.setUint16(10, archivos.length, true);
+    fin.setUint32(12, tam, true); fin.setUint32(16, off, true);
+    return new Blob([...partes, ...central, new Uint8Array(fin.buffer)]);
+  };
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const col = (i) => { let s = ''; for (i++; i; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s; return s; };
+  // Estilos: 0 normal, 1 encabezado, 2 pesos, 3 porcentaje, 4 entero, 5 entero en rojo, 6 título
+  const ESTILOS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="2"><numFmt numFmtId="164" formatCode="&quot;$&quot; #,##0"/><numFmt numFmtId="165" formatCode="0.0%"/></numFmts><fonts count="4"><font><sz val="10"/><name val="Calibri"/></font><font><b/><sz val="10"/><name val="Calibri"/></font><font><sz val="10"/><color rgb="FFB42318"/><name val="Calibri"/></font><font><b/><sz val="13"/><name val="Calibri"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEDEBE7"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="7"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="3" fontId="2" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/><xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs></styleSheet>`;
+  // hoja: {nombre, titulo, subtitulo, columnas: [[encabezado, ancho, estilo]], filas: [[valores]]}
+  const hoja = (h) => {
+    const n = h.columnas.length, filas = [];
+    const celda = (r, i, v, s) => {
+      const ref = col(i) + r;
+      if (v == null || v === '') return '';
+      if (typeof v === 'number') return `<c r="${ref}" s="${s}"><v>${Number.isFinite(v) ? v : 0}</v></c>`;
+      return `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`;
+    };
+    filas.push(`<row r="1">${celda(1, 0, h.titulo, 6)}</row>`, `<row r="2">${celda(2, 0, h.subtitulo, 0)}</row>`);
+    filas.push(`<row r="3">${h.columnas.map((c, i) => celda(3, i, c[0], 1)).join('')}</row>`);
+    h.filas.forEach((f, j) => { const r = j + 4; filas.push(`<row r="${r}">${f.map((v, i) => celda(r, i, v, h.columnas[i][2])).join('')}</row>`); });
+    const ult = h.filas.length + 3;
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${h.columnas.map((c, i) => `<col min="${i + 1}" max="${i + 1}" width="${c[1]}" customWidth="1"/>`).join('')}</cols><sheetData>${filas.join('')}</sheetData><autoFilter ref="A3:${col(n - 1)}${ult}"/></worksheet>`;
+  };
+  return (hojas) => zip([
+    ['[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${hojas.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`],
+    ['_rels/.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
+    ['xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${hojas.map((h, i) => `<sheet name="${esc(h.nombre)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets><definedNames>${hojas.map((h, i) => `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">'${esc(h.nombre)}'!$A$3:$${col(h.columnas.length - 1)}$${h.filas.length + 3}</definedName>`).join('')}</definedNames></workbook>`],
+    ['xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${hojas.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${hojas.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
+    ['xl/styles.xml', ESTILOS],
+    ...hojas.map((h, i) => [`xl/worksheets/sheet${i + 1}.xml`, hoja(h)]),
+  ]);
+})();
+window.RV.xlsx = xlsx;
+
+const exportarRutas = async (dl) => {
+  const d = dash.data('rutas'), inf = dash.data('info');
+  if (d.status !== 'ok' || inf.status !== 'ok') return;
+  const i = inf.data[0], dSel = RV.dia(), p = RV.prov(), vs = RV.vends();
+  const orden = (a, b) => String(a.vendedor_nombre).localeCompare(String(b.vendedor_nombre)) || RV.DIAS.indexOf(a.dia) - RV.DIAS.indexOf(b.dia);
+  const filtro = (r) => RV.enVend(r.vendedor) && (!dSel || r.dia === dSel);
+  const total = d.data.filter((r) => r.prov === p && filtro(r)).sort(orden);
+  // Por proveedor: los que vende cada vendedor este mes (o solo el elegido), en todas sus rutas
+  const vendeProv = new Set(d.data.filter((r) => r.prov && (r.venta || r.con_compra)).map((r) => r.vendedor + '|' + r.prov));
+  const porProv = d.data.filter((r) => r.prov && filtro(r) && (p ? r.prov === p : vendeProv.has(r.vendedor + '|' + r.prov)))
+    .sort((a, b) => orden(a, b) || b.venta - a.venta);
+  const ult = i.ultimo_dia, mes = RV.mes(i.mes) + ' ' + i.mes.slice(0, 4);
+  const sub = `Ventas al ${ult.slice(8, 10)}/${ult.slice(5, 7)}/${ult.slice(0, 4)} · Vendedores: ${vs.length ? vs.length : 'todos'} · Día: ${dSel || 'todos'} · Proveedor: ${p || 'todos'} · Compraron = le compraron este mes al vendedor de su ruta.`;
+  const base = [['Vendedor', 26, 0], ['Código', 8, 0], ['Día', 11, 0], ['Ruta', 9, 0]];
+  const nums = [['Clientes', 10, 4], ['Compraron', 11, 4], ['Sin compra', 11, 5], ['Cobertura', 11, 3], ['Venta del mes', 16, 2]];
+  const fila = (r, extra) => [r.vendedor_nombre, r.vendedor, r.dia, r.rutas, ...extra, r.clientes, r.con_compra, r.sin_compra, r.cobertura, Math.round(r.venta)];
+  const blob = RV.xlsx([
+    {nombre: 'Rutas', titulo: `Rutas por vendedor y día · ${mes}${p ? ' · ' + p : ''}`, subtitulo: sub,
+      columnas: [...base, ...nums], filas: total.map((r) => fila(r, []))},
+    {nombre: 'Por proveedor', titulo: `Rutas por vendedor, día y proveedor · ${mes}`, subtitulo: sub,
+      columnas: [...base, ['Proveedor', 34, 0], ...nums], filas: porProv.map((r) => fila(r, [r.prov]))},
+  ]);
+  document.querySelectorAll('.rv-exp').forEach((e) => { e.hidden = true; });
+  const aviso = (c) => document.querySelectorAll('.rv-exp-' + c).forEach((e) => { e.hidden = false; });
+  try {
+    await dl.save({filename: `rutas_por_proveedor_${i.mes.slice(0, 7)}.xlsx`, data: blob});
+    aviso('ok');
+  } catch (e) {
+    aviso(e && e.code === 'declined' ? 'cancel' : 'no');
+  }
+};
+(async () => {
+  const dl = window.claude && window.claude.use ? await window.claude.use('downloads') : null;
+  if (!dl) return;
+  document.querySelectorAll('.rv-exportar, .rv-exportar-nota').forEach((b) => { b.hidden = false; });
+  document.querySelectorAll('.rv-exportar').forEach((b) => b.addEventListener('click', () => exportarRutas(dl)));
+})();
+
+dash.draw('t-rutas', (tb) => {
+  const d = dash.data('rutas');
+  if (d.status !== 'ok') { tb.replaceChildren(); return; }
+  const dSel = RV.dia(), p = RV.prov();
+  const rows = d.data.filter((r) => r.prov === p && RV.enVend(r.vendedor) && (!dSel || r.dia === dSel))
+    .sort((a, b) => String(a.vendedor_nombre).localeCompare(String(b.vendedor_nombre)) || RV.DIAS.indexOf(a.dia) - RV.DIAS.indexOf(b.dia));
+  RV.filas(tb, rows, [['vendedor_nombre'], ['dia'], ['rutas'], ['clientes', RV.n, 'n'], ['con_compra', RV.n, 'n'],
+    ['sin_compra', RV.n, 'n'], ['cobertura', RV.pct, 'n'], ['venta', RV.full, 'n']], (r) => RV.key(r.vendedor, r.dia, r.prov));
+  tb.onclick = (e) => {
+    const tr = e.target.closest('tr[data-key]');
+    if (!tr) return;
+    const [cod, dia] = tr.dataset.key.split(',').slice(0, 2).map(decodeURIComponent);
+    dash.setParams({vends: [cod], dia}); rvTab('clientes');
+  };
+});
+})();</script>
+
+<script>(() => {
+// Venta al día
+const ejes = (svg, x, y, W, H, m, tickX) => {
+  const gy = svg.append('g').attr('transform', `translate(${m.l},0)`)
+    .call(d3.axisLeft(y).ticks(4).tickSize(-(W - m.l - m.r)).tickFormat(RV.money))
+    .attr('font-size', null).attr('font-family', null);
+  gy.select('.domain').remove();
+  gy.selectAll('line').attr('stroke', 'var(--cds-chart-grid)');
+  gy.selectAll('text').attr('fill', 'var(--color-fg-muted)').style('font-size', 'var(--cds-font-size-caption)');
+  const gx = svg.append('g').attr('transform', `translate(0,${H - m.b})`).call(tickX).attr('font-size', null).attr('font-family', null);
+  gx.select('.domain').attr('stroke', 'var(--cds-chart-axis)');
+  gx.selectAll('line').remove();
+  gx.selectAll('text').attr('fill', 'var(--color-fg-muted)').style('font-size', 'var(--cds-font-size-caption)');
+};
+const pasoDias = (W) => Math.max(1, Math.ceil(31 * 26 / W));
+
+dash.draw('g-dia', (el) => {
+  const a = dash.data('acumulado');
+  el.replaceChildren();
+  if (a.status !== 'ok') return;
+  const p = RV.prov();
+  const rows = RV.deVends(a.data.filter((r) => r.prov === p), (r) => r.dia, ['venta_dia', 'acum', 'acum_ant']).rows
+    .filter((r) => r.venta_dia != null).sort((q, r) => q.dia - r.dia);
+  const W = Math.max(280, el.clientWidth), H = 240, m = {t: 12, r: 8, b: 24, l: 64};
+  const x = d3.scaleBand(rows.map((r) => r.dia), [m.l, W - m.r]).padding(0.2);
+  const y = d3.scaleLinear([Math.min(0, d3.min(rows, (r) => r.venta_dia) || 0), d3.max(rows, (r) => r.venta_dia) || 1], [H - m.b, m.t]).nice();
+  const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`);
+  const paso = pasoDias(W);
+  ejes(svg, x, y, W, H, m, d3.axisBottom(x).tickValues(x.domain().filter((d) => (d - 1) % paso === 0)));
+  const tip = RV.tip(el);
+  svg.append('g').selectAll('rect').data(rows).join('rect')
+    .attr('x', (r) => x(r.dia)).attr('width', x.bandwidth())
+    .attr('y', (r) => y(Math.max(0, r.venta_dia))).attr('height', (r) => Math.abs(y(r.venta_dia) - y(0)))
+    .attr('rx', 2).attr('fill', dash.colors[0])
+    .on('mousemove', (e, r) => { const [px, py] = d3.pointer(e, el); tip.show(px, py, 'Día ' + r.dia, [RV.full(r.venta_dia)]); })
+    .on('mouseleave', () => tip.hide());
+});
+
+dash.draw('g-acum', (el) => {
+  const a = dash.data('acumulado');
+  el.replaceChildren();
+  if (a.status !== 'ok') return;
+  const p = RV.prov();
+  const rows = RV.deVends(a.data.filter((r) => r.prov === p), (r) => r.dia, ['venta_dia', 'acum', 'acum_ant']).rows
+    .sort((q, r) => q.dia - r.dia);
+  if (!rows.length) return;
+  const W = Math.max(280, el.clientWidth), H = 240, m = {t: 12, r: 12, b: 24, l: 64};
+  const x = d3.scaleLinear([1, d3.max(rows, (r) => r.dia)], [m.l, W - m.r]);
+  const y = d3.scaleLinear([0, d3.max(rows, (r) => Math.max(r.acum ?? 0, r.acum_ant ?? 0)) || 1], [H - m.b, m.t]).nice();
+  const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`);
+  const paso = pasoDias(W);
+  ejes(svg, x, y, W, H, m, d3.axisBottom(x).tickValues(d3.range(1, x.domain()[1] + 1, paso)).tickFormat(d3.format('d')));
+  const series = [['acum_ant', 'var(--cds-chart-muted)', 'Mes anterior'], ['acum', dash.colors[0], 'Mes en curso']];
+  for (const [f, c] of series) {
+    svg.append('path').datum(rows.filter((r) => r[f] != null))
+      .attr('fill', 'none').attr('stroke', c).attr('stroke-width', 2).attr('stroke-linecap', 'round').attr('stroke-linejoin', 'round')
+      .attr('d', d3.line((r) => x(r.dia), (r) => y(r[f])));
+  }
+  const ult = rows.filter((r) => r.acum != null).at(-1);
+  if (ult) svg.append('circle').attr('cx', x(ult.dia)).attr('cy', y(ult.acum)).attr('r', 3.5).attr('fill', dash.colors[0]);
+  const regla = svg.append('line').attr('y1', m.t).attr('y2', H - m.b).attr('stroke', 'var(--cds-chart-reference)').attr('visibility', 'hidden');
+  const tip = RV.tip(el);
+  svg.append('rect').attr('x', m.l).attr('y', m.t).attr('width', W - m.l - m.r).attr('height', H - m.t - m.b).attr('fill', 'transparent')
+    .on('mousemove', (e) => {
+      const [px, py] = d3.pointer(e, el);
+      const d = Math.max(1, Math.min(x.domain()[1], Math.round(x.invert(d3.pointer(e)[0]))));
+      const r = rows.find((q) => q.dia === d);
+      regla.attr('x1', x(d)).attr('x2', x(d)).attr('visibility', 'visible');
+      tip.show(px, py, 'Hasta el día ' + d, ['Mes en curso: ' + RV.full(r.acum), 'Mes anterior: ' + RV.full(r.acum_ant)]);
+    })
+    .on('mouseleave', () => { regla.attr('visibility', 'hidden'); tip.hide(); });
+});
+document.querySelectorAll('.rv-sw0').forEach((i) => { i.style.background = dash.colors[0]; });
+
+dash.draw('t-vend', (tb) => {
+  const k = dash.data('kpi');
+  if (k.status !== 'ok') { tb.replaceChildren(); return; }
+  const p = RV.prov();
+  const rows = k.data.filter((x) => x.vend !== 'todos' && x.prov === p && (x.venta || x.ant_mismo_dia)).sort((a, b) => b.venta - a.venta);
+  RV.filas(tb, rows, [['vend'], ['nombre'], ['venta', RV.full, 'n'], ['ant_mismo_dia', RV.full, 'n'],
+    ['variacion', RV.signo, 'n'], ['pedidos', RV.n, 'n'], ['cobertura', RV.pct, 'n']],
+    (r) => RV.key(r.vend, r.prov), (r) => (RV.vends().includes(r.vend) ? 'sel' : ''));
+  tb.querySelectorAll('tr').forEach((tr, i) => {
+    const td = tr.children[4], vr = rows[i].variacion;
+    if (vr != null) td.className = 'n ' + (vr >= 0 ? 'sube' : 'baja');
+  });
+  tb.onclick = (e) => {
+    const tr = e.target.closest('tr[data-key]');
+    if (!tr) return;
+    const c = decodeURIComponent(tr.dataset.key.split(',')[0]), vs = RV.vends();
+    dash.setParams({vends: vs.includes(c) ? vs.filter((x) => x !== c) : [...vs, c]});
+  };
+});
+})();</script>
+
+<script>(() => {
+// Proveedores, marcas y artículos
+const barra = (v, max) => {
+  const s = document.createElement('span');
+  s.className = 'rv-in';
+  s.style.width = (max > 0 ? Math.max(0, v) / max * 4 : 0) + 'rem';
+  return s;
+};
+
+dash.draw('t-prov', (tb) => {
+  const d = dash.data('prov_mes');
+  if (d.status !== 'ok') { tb.replaceChildren(); return; }
+  const p = RV.prov();
+  const {suma, rows} = RV.deVends(d.data, (r) => r.proveedor, ['neto', 'unidades']);
+  const tot = d3.sum(rows, (r) => r.neto);
+  // Sumando vendedores, la participación se recalcula y los artículos distintos no se pueden sumar
+  if (suma) rows.forEach((r) => { r.participacion = tot ? r.neto / tot : null; r.articulos = null; });
+  rows.sort((a, b) => b.neto - a.neto);
+  const max = d3.max(rows, (r) => r.neto) || 0;
+  RV.filas(tb, rows, [['proveedor'], ['neto', RV.full, 'n'], ['participacion', RV.pct, 'n'], ['unidades', RV.n, 'n'], ['articulos', RV.n, 'n']],
+    (r) => (suma ? null : RV.key(r.vend, r.proveedor)), (r) => (r.proveedor === p ? 'sel' : ''));
+  tb.querySelectorAll('tr').forEach((tr, i) => { tr.children[1].prepend(barra(rows[i].neto, max)); tr.dataset.prov = rows[i].proveedor; });
+  tb.onclick = (e) => {
+    const tr = e.target.closest('tr[data-prov]');
+    if (!tr) return;
+    const prov = tr.dataset.prov;
+    dash.setParams({prov: prov === RV.prov() ? '' : prov});
+  };
+});
+
+dash.draw('chip-prov', (el) => { el.textContent = RV.prov() ? RV.prov() + '  ×' : '—'; });
+
+dash.draw('t-marca', (tb) => {
+  const d = dash.data('marca_mes');
+  if (d.status !== 'ok') { tb.replaceChildren(); return; }
+  const p = RV.prov();
+  const {suma, rows: todas} = RV.deVends(d.data, (r) => r.marca, ['neto', 'unidades']);
+  const rows = todas.filter((r) => !p || r.proveedor === p).sort((a, b) => b.neto - a.neto);
+  const max = d3.max(rows, (r) => r.neto) || 0;
+  RV.filas(tb, rows, [['marca'], ['proveedor'], ['neto', RV.full, 'n'], ['unidades', RV.n, 'n']], (r) => (suma ? null : RV.key(r.vend, r.marca)));
+  tb.querySelectorAll('tr').forEach((tr, i) => tr.children[2].prepend(barra(rows[i].neto, max)));
+});
+
+dash.draw('t-art', (tb) => {
+  const d = dash.data('art_mes');
+  if (d.status !== 'ok') { tb.replaceChildren(); return; }
+  const p = RV.prov();
+  const q = [...document.querySelectorAll('.rv-buscar-art')].map((i) => i.value.trim().toLowerCase()).find(Boolean) || '';
+  const {suma, rows: todas} = RV.deVends(d.data, (r) => r.articulo, ['neto', 'unidades']);
+  const rows = todas.filter((r) => (!p || r.proveedor === p) &&
+    (!q || (r.articulo + ' ' + r.descripcion + ' ' + r.marca).toLowerCase().includes(q))).sort((a, b) => b.neto - a.neto);
+  const max = d3.max(rows, (r) => r.neto) || 0;
+  RV.filas(tb, rows, [['articulo'], ['descripcion'], ['marca'], ['neto', RV.full, 'n'], ['unidades', RV.n, 'n']], (r) => (suma ? null : RV.key(r.vend, r.articulo)));
+  tb.querySelectorAll('tr').forEach((tr, i) => tr.children[3].prepend(barra(rows[i].neto, max)));
+});
+})();</script>
+
+<script>(() => {
+// Clientes de ruta, en rojo los que no compraron este mes
+const cuentaFila = () => {
+  const c = dash.data('cuenta');
+  if (c.status !== 'ok') return null;
+  const rs = c.data.filter((x) => x.dia === RV.dia() && x.prov === RV.prov());
+  const {suma, rows} = RV.deVends(rs, () => 'x', ['clientes', 'sin_compra']);
+  return rows[0] ? {...rows[0], suma} : null;
+};
+for (const [name, campo] of [['c-tot', 'clientes'], ['c-sin', 'sin_compra']]) {
+  dash.draw(name, (el) => {
+    const r = cuentaFila();
+    if (!r) { el.textContent = dash.data('cuenta').status === 'ok' ? '0' : '—'; return; }
+    if (r.suma) { delete el.dataset.where; delete el.dataset.field; }
+    else { el.dataset.field = campo; el.dataset.where = 'vend=' + encodeURIComponent(r.vend) + '&dia=' + encodeURIComponent(r.dia) + '&prov=' + encodeURIComponent(r.prov); }
+    el.textContent = RV.n(r[campo]);
+  });
+}
+
+dash.draw('t-cli', (tb) => {
+  const d = dash.data('clientes'), cc = dash.data('cli_compro');
+  if (d.status !== 'ok' || cc.status !== 'ok') { tb.replaceChildren(); return; }
+  const dSel = RV.dia(), p = RV.prov();
+  const provsDe = new Map(cc.data.map((r) => [r.cliente, r.proveedores]));
+  const q = [...document.querySelectorAll('.rv-buscar-cli')].map((i) => i.value.trim().toLowerCase()).find(Boolean) || '';
+  const solo = [...document.querySelectorAll('.rv-solo-sin')].some((i) => i.checked);
+  const sin = (r) => (p ? !(provsDe.get(r.cliente) || '').split(' · ').includes(p) : !(Number(r.venta_vendedor) > 0));
+  const rows = d.data.filter((r) => RV.enVend(r.vendedor) && (!dSel || r.dia === dSel) && (!solo || sin(r)) &&
+    (!q || (r.cliente + ' ' + r.nombre + ' ' + r.localidad + ' ' + r.direccion).toLowerCase().includes(q)))
+    .sort((a, b) => sin(b) - sin(a) || String(a.vendedor_nombre).localeCompare(String(b.vendedor_nombre)) ||
+      RV.DIAS.indexOf(a.dia) - RV.DIAS.indexOf(b.dia) || String(a.nombre).localeCompare(String(b.nombre)));
+  RV.filas(tb, rows, [['cliente'], ['nombre'], ['localidad'], ['rubro'], ['vendedor_nombre'], ['ruta'], ['dia'],
+    ['venta_vendedor', RV.full, 'n'], ['ultima_compra', RV.fecha, 'n'], ['cliente', (c) => provsDe.get(c) || '']],
+    (r) => r.cliente, (r) => (sin(r) ? 'sin' : ''));
+});
+})();</script>
+
+</div>
+</body>
+</html>
