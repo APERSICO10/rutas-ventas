@@ -81,7 +81,7 @@ window.dash = (() => {
     for (const n of draws.keys()) correr(n);
   };
   for (const i of ids) {
-    fetch('datos/' + i + '.json?v=2026112310560000')
+    fetch('datos/' + i + '.json?v=2026112410560000')
       .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
       .then((d) => { st[i] = { status: 'ok', data: d }; version++; todo(); })
       .catch(() => { st[i] = { status: 'error', data: [] }; version++; todo(); });
